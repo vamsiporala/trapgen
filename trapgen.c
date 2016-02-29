@@ -157,27 +157,31 @@ optProc(int argc, char *const *argv, int opt)
         }
         break;
     case 'R':
-        if (optarg)
+        if (optarg) {
            trap_rate = atoi(optarg);
-        else {
+        } else {
            fprintf(stderr,
                    "Trap Rate per second input is missing. So setting to default value as 1\n");
            exit(1);
         }
         break;
     case 'N':
-        if (optarg)
+        if (optarg) {
            trap_count = atoi(optarg);
-        else {
+        } else {
            fprintf(stderr,
                    "Trap Count is mandatory. Please specify and re-run\n");
            exit(1);
         }
         break;
     case 'F':
-        if (optarg)
-           strcpy(trap_file,optarg);
-        else {
+        if (optarg) {
+           trap_file = (char *) malloc(sizeof(optarg)+1);
+           if (trap_file)
+              strcpy(trap_file,optarg);
+           else
+              fprintf(stderr,"Failed to copy the trap file path\n");
+        } else {
            fprintf(stderr,
                    "Trap Info file is mandatory. Please specify and re-run \n");
            exit(1);
@@ -188,9 +192,13 @@ optProc(int argc, char *const *argv, int opt)
             if (!strcmp("linkup",optarg) || \
                 !strcmp("linkdown",optarg) || \
                 !strcmp("mac",optarg) || \
-                !strcmp("maclink",optarg))
-                strcpy(trap_type,optarg);
-            else {
+                !strcmp("maclink",optarg)) {
+                trap_type = (char *) malloc(sizeof(optarg)+1);
+                if (trap_type)
+                   strcpy(trap_type,optarg);
+                else
+                   fprintf(stderr,"Failed to parse the trap type\n");
+            } else {
                 fprintf(stderr,
                         "Trap type mentioned is %s, but supported trap types are linkup,linkdown,mac,maclink\n",optarg);
                 exit(1);
@@ -296,8 +304,8 @@ main(int argc, char *argv[])
     /* Check if trap info is available trap_count, if not report error and abort */
     if (delimit_count != trap_count) {
        fprintf(stderr,
-               "Trap Count mentioned is %d for option N,");
-       fprintf(stderr,"but traps info is available only for %d in %s",trap_count,delimit_count,trap_file);
+               "Trap Count mentioned is %d for option N,",trap_count);
+       fprintf(stderr," but traps info is available only for %d in %s\n",delimit_count,trap_file);
        exit(1);
     }
 
@@ -448,38 +456,114 @@ main(int argc, char *argv[])
     } else
 #endif
     {
+
         long            sysuptime;
         char            csysuptime[20];
+        char base_trap[100] = {0};
+        char *token = (char *) malloc(500);
+        char one_oid[500] = {0};
+        char oid_name[200] = {0};
+        char oid_type[10] = {0};
+        char oid_val[200] = {0};
 
-        pdu = snmp_pdu_create(inform ? SNMP_MSG_INFORM : SNMP_MSG_TRAP2);
-        if (arg == argc) {
-            fprintf(stderr, "Missing up-time parameter\n");
-            usage();
-            SOCK_CLEANUP;
-            exit(1);
-        }
-        trap = argv[arg];
-        if (*trap == 0) {
-            sysuptime = get_uptime();
-            sprintf(csysuptime, "%ld", sysuptime);
-            trap = csysuptime;
-        }
-        snmp_add_var(pdu, objid_sysuptime,
-                     sizeof(objid_sysuptime) / sizeof(oid), 't', trap);
-        if (++arg == argc) {
-            fprintf(stderr, "Missing trap-oid parameter\n");
-            usage();
-            SOCK_CLEANUP;
-            exit(1);
-        }
-        if (snmp_add_var
-            (pdu, objid_snmptrap, sizeof(objid_snmptrap) / sizeof(oid),
-             'o', argv[arg]) != 0) {
-            snmp_perror(argv[arg]);
-            SOCK_CLEANUP;
-            exit(1);
-        }
+        time_t start_time,end_time,elapsed_time;
+        start_time = time(NULL);
+        printf(ctime(&start_time));
+
+        /* To send the trap load */
+        int tc = 1;
+        while (tc <= trap_count) {
+          pdu = snmp_pdu_create(inform ? SNMP_MSG_INFORM : SNMP_MSG_TRAP2);
+          if (arg == argc) {
+             fprintf(stderr, "Missing up-time parameter\n");
+             usage();
+             SOCK_CLEANUP;
+             exit(1);
+          }
+          trap = argv[arg];
+          if (*trap == 0) {
+              sysuptime = get_uptime();
+              sprintf(csysuptime, "%ld", sysuptime);
+              trap = csysuptime;
+          }
+          snmp_add_var(pdu, objid_sysuptime,
+                       sizeof(objid_sysuptime) / sizeof(oid), 't', trap);
+
+          if (!strcmp("linkup",trap_type)) {
+              strcpy(base_trap,"IF-MIB::linkUp");
+          }
+
+          if (snmp_add_var
+             (pdu, objid_snmptrap, sizeof(objid_snmptrap) / sizeof(oid),
+              'o', base_trap) != 0) {
+             snmp_perror(base_trap);
+             SOCK_CLEANUP;
+             exit(1);
+          }
+
+          token = strtok(trapinfo[tc-1],",");
+          while(token) {
+            one_oid[0] = '\0';
+            strcpy(one_oid,token);
+            int p,q;
+            int space_count = 0;
+            memset(oid_name,0,sizeof(oid_name));
+            memset(oid_type,0,sizeof(oid_type));
+            memset(oid_val,0,sizeof(oid_val));
+            for (p=0,q=0; one_oid[p] != '\0'; p++,q++) {
+                 if (isspace(one_oid[p])) {
+                     space_count++;
+                     q = -1;
+                 }
+                 if (space_count == 0)
+                    oid_name[q] = one_oid[p];
+                 else if (space_count == 1)
+                    oid_type[q] = one_oid[p];
+                 else if (space_count == 2)
+                    oid_val[q] = one_oid[p];
+                    
+            }
+           
+            name_length = MAX_OID_LEN;
+            if (!snmp_parse_oid(oid_name, name, &name_length)) {
+               snmp_perror(oid_name);
+               SOCK_CLEANUP;
+               exit(1);
+            }
+            if (snmp_add_var
+               (pdu, name, name_length, oid_type[0],
+               oid_val) != 0) {
+               snmp_perror(oid_name);
+               SOCK_CLEANUP;
+               exit(1);
+            }
+
+            token = strtok(NULL,",");
+          }
+
+          if (inform)
+             status = snmp_synch_response(ss, pdu, &response);
+          else
+             status = snmp_send(ss, pdu) == 0;
+          if (status) {
+             snmp_sess_perror(inform ? "snmpinform" : "snmptrap", ss);
+             if (!inform)
+                snmp_free_pdu(pdu);
+             exitval = 1;
+          } else if (inform)
+             snmp_free_pdu(response);
+
+          // wait for one second after pumping trap_rate number of traps
+          if (tc % trap_rate == 0)
+              sleep(1);
+
+          tc++; //Increment the trap counter
+       }
+       end_time = time(NULL);
+       printf(ctime(&end_time));
+ 
     }
+    /*
     arg++;
 
     while (arg < argc) {
@@ -517,6 +601,7 @@ main(int argc, char *argv[])
     } else if (inform)
         snmp_free_pdu(response);
 
+    */
     snmp_close(ss);
     SOCK_CLEANUP;
     return exitval;
